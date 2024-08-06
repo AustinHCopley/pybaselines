@@ -131,6 +131,80 @@ class _Optimizers(_Algorithm):
                     params[key] = [value]
 
         return baselines, params
+    
+    @_Algorithm._register(ensure_1d=False, skip_sorting=True)
+    def collab_cwt(self, data, average_dataset=True, method_kwargs=None):
+        """
+        Collaborative Continuous Wavelet Transform Baseline Recognition (collab-CWT).
+
+        Averages the data or the fit weights for an entire dataset to get more
+        optimal results. Specifically uses the Continuous Wavelet Transform Baseline Recognition algorithm (CWT-BR).
+
+        Parameters
+        ----------
+        data : array-like, shape (M, N)
+            An array with shape (M, N) where M is the number of entries in
+            the dataset and N is the number of data points in each entry.
+        average_dataset : bool, optional
+            If True (default) will average the dataset before fitting to get the
+            weighting. If False, will fit each individual entry in the dataset and
+            then average the weights to get the weighting for the dataset.
+        method : str, optional
+            A string indicating the Whittaker-smoothing-based or weighted spline method to
+            use for fitting the baseline. Default is 'asls'.
+        method_kwargs : dict, optional
+            A dictionary of keyword arguments to pass to the selected `method` function.
+            Default is None, which will use an empty dictionary.
+
+        Returns
+        -------
+        baselines : np.ndarray, shape (M, N)
+            An array of all of the baselines.
+        params : dict
+            A dictionary with the following items:
+
+            * 'average_scales': numpy.ndarray, shape (N,)
+                The wavelet scale used to fit all of the baselines.
+        """
+        method = "cwt_br"
+        dataset, baseline_func, _, method_kws, _ = self._setup_optimizer(
+            data, method, (classification,), method_kwargs,
+            True
+        )
+        data_shape = dataset.shape
+        if len(data_shape) != 2:
+            raise ValueError((
+                'the input data must have a shape of (number of measurements, number of points), '
+                f'but instead has a shape of {data_shape}'
+            ))
+
+        # step 1: calculate wavelet scales for the entire dataset
+        if average_dataset:
+            _, fit_params = baseline_func(np.mean(dataset, axis=0), **method_kws)
+            method_kws['scales'] = fit_params['best_scale']
+        else:
+            scales = []
+            for i, entry in enumerate(dataset):
+                _, fit_params = baseline_func(entry, **method_kws)
+                scales.append(fit_params['best_scale'])
+            method_kws['scales'] = np.mean(scales, axis=0, dtype=np.int16)
+
+        # step 2: use the dataset scales from step 1 (stored in method_kws['scales'])
+        # to fit each individual data entry; set tol to infinity so that only one
+        # iteration is done and new scales are not calculated
+        method_kws['tol'] = np.inf
+        baselines = np.empty(data_shape)
+        params = {'average_scales': method_kws['scales']}
+        
+        for i, entry in enumerate(dataset):
+            baselines[i], param = baseline_func(entry, **method_kws)
+            for key, value in param.items():
+                if key in params:
+                    params[key].append(value)
+                else:
+                    params[key] = [value]
+
+        return baselines, params
 
     @_Algorithm._register(skip_sorting=True)
     def optimize_extended_range(self, data, method='asls', side='both', width_scale=0.1,
